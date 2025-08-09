@@ -1,0 +1,326 @@
+:root {
+  --bg: #0b1522;
+  --felt: #0e3b2e;
+  --card: #f8f9fb;
+  --ink: #1b2430;
+  --accent: #ffd166;
+  --shadow: rgba(0,0,0,0.35);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+  color: white;
+  background-color: #0b6e3f; /* classic solitaire green */
+  background-image:
+    radial-gradient(120% 90% at 50% 0%, rgba(255,255,255,0.06), rgba(255,255,255,0) 60%),
+    radial-gradient(120% 90% at 50% 100%, rgba(0,0,0,0.35), rgba(0,0,0,0) 45%);
+}
+
+/* Prevent initial flash of UI until JS replaces with landing */
+body.booting #gameRoot { visibility: hidden; opacity: 0; }
+body:not(.booting) #gameRoot { opacity: 1; transition: opacity 200ms ease; }
+/* Hide bars during initial boot to prevent flash */
+body.booting .topbar,
+body.booting .bottombar { visibility: hidden; opacity: 0; }
+body:not(.booting) .topbar,
+body:not(.booting) .bottombar { visibility: visible; opacity: 1; transition: opacity 200ms ease; }
+
+/* Global fade behavior: all UI (except cards) smoothly fades on opacity changes */
+body :not(.card) { transition: opacity 220ms ease; }
+
+/* Subtle fine texture; low opacity to keep it simple */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(0.8px 0.8px at 25% 25%, rgba(255,255,255,0.04), transparent 50%),
+    radial-gradient(0.8px 1.2px at 75% 65%, rgba(0,0,0,0.06), transparent 50%);
+  background-size: 18px 18px, 26px 26px;
+  opacity: 0.18;
+}
+
+.topbar, .bottombar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.35), rgba(0,0,0,0.12));
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.bottombar {
+  border-top: 1px solid rgba(255,255,255,0.08);
+  border-bottom: 0;
+}
+
+.title { font-weight: 700; letter-spacing: 0.5px; }
+.btn {
+  appearance: none;
+  border: 0;
+  background: #214a8b;
+  color: #fff;
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  box-shadow: 0 6px 16px var(--shadow);
+  transition: transform 120ms ease, background 120ms ease, opacity 120ms ease;
+}
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:not(:disabled):active { transform: translateY(1px) scale(0.99); }
+.btn:not(:disabled):hover { background: #2a5fb2; }
+
+.hint-glow {
+  animation: hintPulse 1200ms ease-in-out 0s 3;
+}
+
+@keyframes hintPulse {
+  0% { box-shadow: 0 0 0 rgba(255, 209, 102, 0.0); transform: translateY(0) scale(1); }
+  40% { box-shadow: 0 0 0 10px rgba(255, 209, 102, 0.5), 0 0 28px rgba(255, 209, 102, 0.6); transform: translateY(-2px) scale(1.04); }
+  100% { box-shadow: 0 0 0 rgba(255, 209, 102, 0.0); transform: translateY(0) scale(1); }
+}
+
+/* Stronger hint on destination column */
+.column.hint-glow {
+  outline: 3px solid var(--accent);
+  outline-offset: -4px;
+  box-shadow: 0 0 0 10px rgba(255, 209, 102, 0.25);
+}
+
+/* Warn style for confirmation on Hint button */
+.btn.btn-warn {
+  background: #b96d00;
+}
+.btn.btn-warn:not(:disabled):hover { background: #d07b00; }
+
+#gameRoot {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: calc(100% - 96px);
+}
+
+#foundationArea {
+  display: grid;
+  grid-template-columns: repeat(4, 88px);
+  gap: 12px;
+  padding: 16px;
+  width: fit-content;
+  margin-inline: auto;
+  transition: opacity 400ms ease, transform 400ms ease;
+}
+
+.foundation-slot {
+  position: relative;
+  width: 88px;
+  height: 120px;
+  border-radius: 10px;
+  outline: 2px dashed rgba(255,255,255,0.25);
+  outline-offset: -6px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.01));
+  box-shadow: inset 0 10px 18px rgba(0,0,0,0.25), 0 10px 30px var(--shadow);
+}
+
+#tableauArea {
+  display: grid;
+  grid-template-columns: repeat(10, 88px);
+  gap: 12px;
+  padding: 16px;
+  height: 100%;
+  width: fit-content;
+  margin-inline: auto;
+}
+
+.column {
+  position: relative;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  min-height: 160px;
+}
+
+.column.completed {
+  opacity: 0.35;
+}
+
+#cardLayer { position: absolute; inset: 0; pointer-events: auto; }
+
+/* Card visuals via sprite sheet */
+.card {
+  position: absolute;
+  width: 88px;
+  height: 120px;
+  border-radius: 8px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+  transition: transform 280ms ease; /* left/top transitions controlled during dealing */
+  will-change: transform, left, top;
+  pointer-events: auto;
+}
+.dragging { transform: scale(1.06) rotate(-1deg); filter: drop-shadow(0 10px 20px rgba(0,0,0,0.5)); }
+
+/* Drop highlights */
+.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+}
+
+/* Responsive tweaks */
+@media (max-width: 1100px) {
+  #tableauArea { grid-template-columns: repeat(10, 72px); }
+  .card { width: 72px; height: 98px; }
+  .foundation-slot { width: 72px; height: 98px; }
+  #foundationArea { grid-template-columns: repeat(4, 72px); }
+}
+@media (max-width: 800px) {
+  #tableauArea { grid-template-columns: repeat(5, 72px); }
+  #foundationArea { grid-template-columns: repeat(4, 60px); }
+  .foundation-slot { width: 60px; height: 82px; }
+  .card { width: 60px; height: 82px; }
+}
+
+#statusText { opacity: 0.8; font-size: 14px; }
+
+/* Win state */
+.game-won #tableauArea { opacity: 0; transition: opacity 500ms ease; }
+body.game-won .topbar .controls { opacity: 0; transform: translateY(-8px); pointer-events: none; transition: opacity 350ms ease, transform 350ms ease; }
+body.game-won #foundationArea { opacity: 0; transform: translateY(-6px); pointer-events: none; }
+body.game-won .topbar { opacity: 0; transform: translateY(-10px); transition: opacity 350ms ease, transform 350ms ease; pointer-events: none; }
+body.game-won .bottombar { opacity: 0; transform: translateY(10px); transition: opacity 350ms ease, transform 350ms ease; pointer-events: none; }
+
+/* Confetti */
+#confettiLayer { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 4000; }
+.confetti {
+  position: absolute;
+  top: -20px;
+  border-radius: 2px;
+  animation-name: confettiFall, confettiSpin;
+  animation-timing-function: ease-in, linear;
+  animation-iteration-count: 1, infinite;
+}
+@keyframes confettiFall {
+  0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(120vh) rotate(720deg); opacity: 0.9; }
+}
+
+/* Win overlay */
+#winOverlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  z-index: 3500;
+  color: #fff;
+  text-align: center;
+}
+.win-pretitle {
+  font-size: 28px;
+  letter-spacing: 2px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 400ms ease, transform 400ms ease;
+}
+.win-pretitle.visible {
+  opacity: 0.9;
+  transform: translateY(0);
+}
+.win-title {
+  font-size: clamp(48px, 8vw, 96px);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 500ms ease 120ms, transform 500ms ease 120ms;
+}
+.win-title.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+.win-ace {
+  display: inline-block;
+  width: clamp(40px, 6vw, 72px);
+  height: clamp(58px, 9vw, 104px);
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
+  vertical-align: middle;
+  will-change: transform;
+}
+
+/* Bouncy click animation for Ace */
+.win-ace.ace-bounce { animation: aceBounce 520ms cubic-bezier(.34,1.56,.64,1); }
+@keyframes aceBounce {
+  0% { transform: translateY(0) scale(1); }
+  20% { transform: translateY(-8px) scale(1.08); }
+  40% { transform: translateY(3px) scale(0.96); }
+  60% { transform: translateY(-4px) scale(1.04); }
+  80% { transform: translateY(2px) scale(0.99); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+/* Subtle persistent idle bounce after win */
+.win-ace.ace-idle { animation: aceIdle 3000ms ease-in-out infinite; }
+@keyframes aceIdle {
+  0% { transform: translateY(0) }
+  50% { transform: translateY(-2px) }
+  100% { transform: translateY(0) }
+}
+
+/* When both play, run bounce then resume idle */
+.win-ace.ace-idle.ace-bounce { animation: aceBounce 520ms cubic-bezier(.34,1.56,.64,1), aceIdle 3000ms ease-in-out infinite 520ms; }
+
+.win-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 500ms ease 240ms, transform 500ms ease 240ms;
+}
+.win-actions.visible { opacity: 1; transform: translateY(0); }
+
+/* Floating title clone for transition */
+#winTitleClone {
+  position: fixed;
+  left: 0; top: 0;
+  transform-origin: center;
+  transition: left 700ms ease, top 700ms ease, transform 700ms ease, opacity 600ms ease;
+  z-index: 3600;
+  font-weight: 800;
+}
+@keyframes confettiSpin {
+  0% { filter: brightness(1); }
+  50% { filter: brightness(1.2); }
+  100% { filter: brightness(1); }
+}
+
+/* Simple modal styles for rules */
+#rulesModal { position: fixed; inset: 0; z-index: 5000; }
+#rulesModal .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); }
+#rulesModal .modal {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(520px, 90vw);
+  background: rgba(20, 20, 20, 0.9);
+  color: #fff;
+  padding: 18px 20px;
+  border-radius: 12px;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.4);
+}
+#rulesModal h2 { margin: 0 0 10px 0; font-size: 22px; }
+#rulesModal ul { margin: 0; padding-left: 18px; }
+#rulesModal li { margin: 6px 0; opacity: 0.95; }
+#rulesModal .modal-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+
+

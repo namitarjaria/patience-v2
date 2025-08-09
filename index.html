@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Patience</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="booting">
+    <header class="topbar">
+      <div class="title">Patience</div>
+      <div class="controls">
+        <button id="redealBtn" class="btn">Redeal</button>
+        <button id="undoBtn" class="btn" disabled>Undo</button>
+        <button id="rulesTopBtn" class="btn" title="View rules">Rules</button>
+        <button id="hintBtn" class="btn">Hint</button>
+        <button id="testWinBtn" class="btn" title="Preview win animation">Test Win</button>
+      </div>
+    </header>
+
+    <main id="gameRoot">
+      <section id="foundationArea" aria-label="Foundations">
+        <div class="foundation-slot" data-suit="S" title="Spades"></div>
+        <div class="foundation-slot" data-suit="H" title="Hearts"></div>
+        <div class="foundation-slot" data-suit="D" title="Diamonds"></div>
+        <div class="foundation-slot" data-suit="C" title="Clubs"></div>
+      </section>
+
+      <section id="tableauArea" aria-label="Tableau (13 columns)">
+        <!-- 13 columns created by JS if not present -->
+      </section>
+
+      <!-- Card layer: all cards are absolutely positioned inside this layer for smooth animation -->
+      <div id="cardLayer" aria-hidden="true"></div>
+    </main>
+
+    <footer class="bottombar">
+      <span id="statusText"></span>
+    </footer>
+
+    <script src="game.js"></script>
+  </body>
+  </html>
+
+
