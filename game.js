@@ -1,6 +1,6 @@
 /*
-  Patience (13-column solitaire)
-  - 52-card deck, deal into 13 columns face-up
+  Patience (10-column solitaire)
+  - 52-card deck, deal into 10 columns face-up
   - Build foundations (A→K) by suit
   - Tableau builds descending by rank, alternating colors
   - Any card or correctly ordered stack can be moved between columns
@@ -9,10 +9,28 @@
 */
 
 (function () {
+  // === CONSTANTS ===
   const NUM_COLUMNS = 10;
-  const FOUNDATION_SUITS = ["S", "H", "D", "C"]; // Kept for suits/colors and assets
+  const FOUNDATION_SUITS = ["S", "H", "D", "C"];
   const RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+  
+  // Animation & timing constants
+  const DEAL_CARD_DELAY_MS = 20;
+  const DEAL_FLY_DURATION_MS = 420;
+  const GATHER_CARD_DELAY_MS = 6;
+  const GATHER_FLY_DURATION_MS = 320;
+  const HINT_GLOW_DURATION_MS = 1000;
+  const HINT_CONFIRM_TIMEOUT_MS = 3000;
+  const MAX_UNDO_STACK = 5;
+  
+  // Layout constants
+  const CARD_OVERLAP_RATIO = 0.28;
+  const SNAP_MARGIN_PX = 60;
+  
+  // Performance: Debounce time for resize
+  const RESIZE_DEBOUNCE_MS = 150;
 
+  // === DOM REFERENCES (cached for performance) ===
   const gameRoot = document.getElementById("gameRoot");
   const tableauArea = document.getElementById("tableauArea");
   const foundationArea = document.getElementById("foundationArea");
@@ -24,45 +42,80 @@
   const testWinBtn = document.getElementById("testWinBtn");
   const statusText = document.getElementById("statusText");
 
-  /** Game State */
-  /**
-   * cards: { id, rankIndex, suit, color, columnIndex, stackIndex, topOfStack: boolean, foundation?: boolean }
-   * tableau: Array<Array<cardId>> size 13; each entry is ordered bottom->top
-   * foundations: { S: topRankIndex, H: number, D: number, C: number }
-   * undoStack: Array<state snapshot> max len 5
-   */
+  // === GAME STATE ===
   let cardsById = new Map();
+  let cardElementsById = new Map(); // Cache of card DOM elements for performance
   let tableau = [];
-  // Completed houses (each is an array of 13 card ids), and disabled columns
   let completedHouses = [];
   let completedColumns = new Set();
-  // Remember last suggested hint to avoid back-and-forth loops
   let lastHintMove = null;
   let hintHistory = [];
-  // Per-head anti-spam cooldown for hints (in hint calls)
-  let hintHeadCooldown = new Map(); // cardId -> remaining calls to skip
+  let hintHeadCooldown = new Map();
   let isGameWon = false;
   let isDealing = false;
   let undoStack = [];
+  
+  // Layout cache (updated on resize)
+  let layoutCache = {
+    cardWidth: 72,
+    cardHeight: 98,
+    overlap: 27,
+    columnRects: [],
+    rootRect: null,
+    needsUpdate: true
+  };
 
-  // Layout metrics
-  function getCardSize() {
-    // Measure an existing card if available to sync with responsive CSS
+  // === LAYOUT HELPERS ===
+  
+  /**
+   * Updates the layout cache with current measurements
+   * Call this after DOM changes or window resize
+   */
+  function updateLayoutCache() {
+    // Measure card size from existing card or use CSS-based fallback
     const sample = cardLayer.querySelector('.card');
     if (sample) {
       const rect = sample.getBoundingClientRect();
-      const cardWidth = Math.round(rect.width);
-      const cardHeight = Math.round(rect.height);
-      return { cardWidth, cardHeight, overlap: Math.floor(cardHeight * 0.28) };
+      layoutCache.cardWidth = Math.round(rect.width);
+      layoutCache.cardHeight = Math.round(rect.height);
+    } else {
+      // Fallback values matching CSS
+      layoutCache.cardWidth = 72;
+      layoutCache.cardHeight = 98;
     }
-    // Fallback to default CSS base size
-    const cardWidth = 72;
-    const cardHeight = 96;
-    return { cardWidth, cardHeight, overlap: Math.floor(cardHeight * 0.28) };
+    layoutCache.overlap = Math.floor(layoutCache.cardHeight * CARD_OVERLAP_RATIO);
+    
+    // Cache column and root rectangles
+    layoutCache.rootRect = gameRoot.getBoundingClientRect();
+    const columns = Array.from(tableauArea.querySelectorAll(".column"));
+    layoutCache.columnRects = columns.map(col => col.getBoundingClientRect());
+    
+    layoutCache.needsUpdate = false;
+  }
+  
+  /**
+   * Gets cached card dimensions
+   */
+  function getCardSize() {
+    if (layoutCache.needsUpdate) {
+      updateLayoutCache();
+    }
+    return {
+      cardWidth: layoutCache.cardWidth,
+      cardHeight: layoutCache.cardHeight,
+      overlap: layoutCache.overlap
+    };
   }
 
-  function isRed(suit) { return suit === "H" || suit === "D"; }
+  // === GAME LOGIC HELPERS ===
+  
+  function isRed(suit) {
+    return suit === "H" || suit === "D";
+  }
 
+  /**
+   * Creates a standard 52-card deck
+   */
   function createDeck() {
     const deck = [];
     let id = 0;
@@ -80,6 +133,9 @@
     return deck;
   }
 
+  /**
+   * Fisher-Yates shuffle algorithm
+   */
   function shuffle(array) {
     for (let i = array.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
@@ -87,6 +143,11 @@
     }
   }
 
+  // === UNDO/REDO SYSTEM ===
+  
+  /**
+   * Saves current game state to undo stack
+   */
   function saveUndoSnapshot() {
     const snapshot = {
       tableau: tableau.map(col => col.slice()),
@@ -95,7 +156,7 @@
       completedColumns: Array.from(completedColumns),
     };
     undoStack.push(snapshot);
-    if (undoStack.length > 5) undoStack.shift();
+    if (undoStack.length > MAX_UNDO_STACK) undoStack.shift();
     undoBtn.disabled = undoStack.length === 0;
   }
 
@@ -129,9 +190,11 @@
     if (headerTitle) headerTitle.style.opacity = '1';
     const bottomBar = document.querySelector('.bottombar');
     if (bottomBar) bottomBar.style.opacity = '';
-    // Reset card map completely to avoid stale entries/styles
+    // Reset card maps completely to avoid stale entries/styles
     cardsById = new Map();
+    cardElementsById = new Map();
     tableau = Array.from({ length: NUM_COLUMNS }, () => []);
+    layoutCache.needsUpdate = true;
     const deck = createDeck();
     shuffle(deck);
     // Fixed deal pattern: 8-8-8-7-6-5-4-3-2-1 across 10 columns
@@ -154,40 +217,58 @@
     hintHeadCooldown = new Map();
   }
 
+  /**
+   * Attaches all card elements to DOM with initial transform positions
+   */
   function attachCardsToDOM() {
-    // Clear old
+    // Clear old DOM and cache
     cardLayer.innerHTML = "";
+    cardElementsById.clear();
+    
     // Use foundation slots as origins if present
     const rootRect = gameRoot.getBoundingClientRect();
     const slots = Array.from(foundationArea.querySelectorAll('.foundation-slot'));
     const origins = slots.map((slot) => {
       const r = slot.getBoundingClientRect();
-      return { left: r.left - rootRect.left + r.width / 2, top: r.top - rootRect.top + r.height / 2 };
+      return { x: r.left - rootRect.left + r.width / 2, y: r.top - rootRect.top + r.height / 2 };
     });
     let originIndex = 0;
+    
+    const { cardWidth, cardHeight } = getCardSize();
+    
     for (const [id, card] of cardsById.entries()) {
       const el = document.createElement("div");
       el.className = "card";
       el.dataset.id = id;
-      el.draggable = false; // We implement pointer-based dragging
+      el.draggable = false;
+      
       // Set per-card SVG background
       el.style.backgroundImage = `url('${cardAssetUrl(card)}')`;
       el.setAttribute('aria-label', `${rankName(card.rankIndex)} of ${suitName(card.suit)}`);
-      // mark for dealing animation
+      
+      // Mark for dealing animation
       el.classList.add('dealing');
-      const { cardWidth, cardHeight } = getCardSize();
+      
+      // Use transform for GPU acceleration (start at origin position)
+      let startX, startY;
       if (origins.length > 0) {
         const o = origins[originIndex % origins.length];
         originIndex++;
-        el.style.left = `${Math.round(o.left - cardWidth / 2)}px`;
-        el.style.top = `${Math.round(o.top - cardHeight / 2)}px`;
+        startX = Math.round(o.x - cardWidth / 2);
+        startY = Math.round(o.y - cardHeight / 2);
       } else {
-        // fallback to top center
-        el.style.left = `${Math.round(rootRect.width / 2 - cardWidth / 2)}px`;
-        el.style.top = `${-cardHeight - 20}px`;
+        // Fallback to top center
+        startX = Math.round(rootRect.width / 2 - cardWidth / 2);
+        startY = -cardHeight - 20;
       }
+      
+      el.style.transform = `translate(${startX}px, ${startY}px)`;
+      
       cardLayer.appendChild(el);
+      cardElementsById.set(id, el);
     }
+    
+    layoutCache.needsUpdate = true;
   }
 
   function suitName(suit) {
@@ -211,11 +292,6 @@
     return `SVG-cards-1.3/${file}`;
   }
 
-  function getColumnRects() {
-    const columns = Array.from(tableauArea.querySelectorAll(".column"));
-    return columns.map((col) => col.getBoundingClientRect());
-  }
-
   function ensureColumnsExist() {
     if (tableauArea.children.length === NUM_COLUMNS) return;
     tableauArea.innerHTML = "";
@@ -225,171 +301,231 @@
       c.dataset.col = String(i);
       tableauArea.appendChild(c);
     }
+    layoutCache.needsUpdate = true;
+  }
+  
+  /**
+   * Gets cached card element by ID (performance optimization)
+   */
+  function getCardEl(id) {
+    return cardElementsById.get(id) || null;
   }
 
+  /**
+   * Positions all cards using GPU-accelerated transforms
+   * Uses cached measurements and batches DOM updates for performance
+   */
   function layoutAll() {
     ensureColumnsExist();
-    const rootRect = gameRoot.getBoundingClientRect();
-    const colRects = getColumnRects();
-    const { overlap, cardWidth } = getCardSize();
-
-    // Position tableau cards
-    for (let col = 0; col < NUM_COLUMNS; col++) {
-      const ids = tableau[col];
-      const baseLeft = colRects[col].left - rootRect.left + Math.round((colRects[col].width - cardWidth) / 2);
-      const baseTop = colRects[col].top - rootRect.top + 6;
-      ids.forEach((id, idx) => {
-        const el = getCardEl(id);
-        if (!el) return;
-        if (!el.classList.contains('dealing')) {
-          el.style.left = `${baseLeft}px`;
-          el.style.top = `${baseTop + idx * overlap}px`;
-        }
-        el.style.zIndex = String(10 + idx);
-      });
+    
+    // Update cache if needed (e.g., after resize)
+    if (layoutCache.needsUpdate) {
+      updateLayoutCache();
     }
-    // Position completed houses in foundation area slots (display only)
-    const slots = Array.from(foundationArea.querySelectorAll('.foundation-slot'));
-    completedHouses.forEach((houseIds, i) => {
-      const slotEl = slots[i];
-      if (!slotEl) return;
-      const rect = slotEl.getBoundingClientRect();
-      const left = rect.left - rootRect.left + Math.round((rect.width - cardWidth) / 2);
-      const top = rect.top - rootRect.top + 6;
-      houseIds.forEach((id, idx) => {
-        const el = getCardEl(id);
-        if (!el) return;
-        el.style.left = `${left}px`;
-        el.style.top = `${top}px`;
-        el.style.zIndex = String(1000 + i * 20 + idx);
+    
+    const { rootRect, columnRects, cardWidth, overlap } = layoutCache;
+    
+    // Batch all DOM updates together (minimize reflows)
+    requestAnimationFrame(() => {
+      // Position tableau cards using transforms
+      for (let col = 0; col < NUM_COLUMNS; col++) {
+        const ids = tableau[col];
+        if (!columnRects[col]) continue;
+        
+        const baseX = columnRects[col].left - rootRect.left + Math.round((columnRects[col].width - cardWidth) / 2);
+        const baseY = columnRects[col].top - rootRect.top + 6;
+        
+        ids.forEach((id, idx) => {
+          const el = getCardEl(id);
+          if (!el) return;
+          
+          // Skip cards currently being dealt (they handle their own transition)
+          if (!el.classList.contains('dealing')) {
+            const x = baseX;
+            const y = baseY + idx * overlap;
+            el.style.transform = `translate(${x}px, ${y}px)`;
+          }
+          el.style.zIndex = String(10 + idx);
+        });
+      }
+      
+      // Position completed houses in foundation area slots
+      const slots = Array.from(foundationArea.querySelectorAll('.foundation-slot'));
+      completedHouses.forEach((houseIds, i) => {
+        const slotEl = slots[i];
+        if (!slotEl) return;
+        
+        const rect = slotEl.getBoundingClientRect();
+        const x = rect.left - rootRect.left + Math.round((rect.width - cardWidth) / 2);
+        const y = rect.top - rootRect.top + 6;
+        
+        houseIds.forEach((id, idx) => {
+          const el = getCardEl(id);
+          if (!el) return;
+          el.style.transform = `translate(${x}px, ${y}px)`;
+          el.style.zIndex = String(1000 + i * 20 + idx);
+        });
       });
     });
   }
 
+  /**
+   * Animates the initial card deal with smooth spring physics
+   */
   function animateInitialDeal() {
     isDealing = true;
-    // Ensure columns exist and compute latest rects after any layout changes
     ensureColumnsExist();
-    const { overlap, cardWidth } = getCardSize();
-    const perCardDelay = 20; // ms
-    const flyDuration = 420;
-    const rootRect = gameRoot.getBoundingClientRect();
-    const colRects = getColumnRects();
-    // compute targets for each card id
+    updateLayoutCache();
+    
+    const { overlap, cardWidth, columnRects, rootRect } = layoutCache;
+    
+    // Compute target positions for each card
     const targets = new Map();
     for (let c = 0; c < NUM_COLUMNS; c++) {
       const ids = tableau[c];
-      const baseLeft = colRects[c].left - rootRect.left + Math.round((colRects[c].width - cardWidth) / 2);
-      const baseTop = colRects[c].top - rootRect.top + 6;
+      if (!columnRects[c]) continue;
+      
+      const baseX = columnRects[c].left - rootRect.left + Math.round((columnRects[c].width - cardWidth) / 2);
+      const baseY = columnRects[c].top - rootRect.top + 6;
+      
       ids.forEach((id, idx) => {
-        targets.set(id, { left: baseLeft, top: baseTop + idx * overlap });
+        targets.set(id, { x: baseX, y: baseY + idx * overlap });
       });
     }
+    
+    // Flatten all card IDs in deal order
     const allIds = [];
     tableau.forEach(col => col.forEach(id => allIds.push(id)));
+    
+    // Animate each card with staggered delay and spring physics
     allIds.forEach((id, i) => {
       const el = getCardEl(id);
       const t = targets.get(id);
       if (!el || !t) return;
-      const delay = i * perCardDelay;
+      
+      const delay = i * DEAL_CARD_DELAY_MS;
       setTimeout(() => {
-        const angle = (Math.random() - 0.5) * 8; // -4..4 deg
-        el.style.transition = `left ${flyDuration}ms cubic-bezier(.22,.61,.36,1), top ${flyDuration}ms cubic-bezier(.22,.61,.36,1), transform ${flyDuration}ms ease`;
-        el.style.left = `${t.left}px`;
-        el.style.top = `${t.top}px`;
-        el.style.transform = `rotate(${angle}deg)`;
+        const angle = (Math.random() - 0.5) * 6; // Slight rotation for natural feel
+        // Smooth spring easing for fluid motion
+        el.style.transition = `transform ${DEAL_FLY_DURATION_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1)`;
+        el.style.transform = `translate(${t.x}px, ${t.y}px) rotate(${angle}deg)`;
+        
         setTimeout(() => {
           el.classList.remove('dealing');
-          el.style.transition = '';
-          el.style.transform = '';
+          // Reset to no rotation after landing
+          el.style.transform = `translate(${t.x}px, ${t.y}px)`;
+          
           if (i === allIds.length - 1) {
             isDealing = false;
           }
-        }, flyDuration + 40);
+        }, DEAL_FLY_DURATION_MS + 40);
       }, delay);
     });
   }
 
+  /**
+   * Gathers all cards back to foundation piles with smooth animation
+   */
   function gatherCardsToPiles(onDone) {
-    // Use current tableau order to control z-order so earlier cards fly under later ones
     const orderedIds = [];
     tableau.forEach(col => col.forEach(id => orderedIds.push(id)));
     const cards = orderedIds.map(getCardEl).filter(Boolean);
-    if (cards.length === 0) { onDone && onDone(); return; }
+    
+    if (cards.length === 0) {
+      onDone && onDone();
+      return;
+    }
+    
     isDealing = true;
     const rootRect = gameRoot.getBoundingClientRect();
     const slots = Array.from(foundationArea.querySelectorAll('.foundation-slot'));
     const { cardWidth, cardHeight } = getCardSize();
+    
+    // Compute target origins (foundation piles)
     const origins = slots.length > 0
       ? slots.map((slot) => {
           const r = slot.getBoundingClientRect();
-          return { left: r.left - rootRect.left + r.width / 2, top: r.top - rootRect.top + r.height / 2 };
+          return {
+            x: r.left - rootRect.left + r.width / 2,
+            y: r.top - rootRect.top + r.height / 2
+          };
         })
-      : [{ left: rootRect.width / 2, top: 20 }];
-    const perCardDelay = 6;
-    const dur = 320;
+      : [{ x: rootRect.width / 2, y: 20 }];
+    
     let doneCount = 0;
     cards.forEach((el, i) => {
       const o = origins[i % origins.length];
-      const left = Math.round(o.left - cardWidth / 2);
-      const top = Math.round(o.top - cardHeight / 2);
-      const delay = i * perCardDelay;
+      const x = Math.round(o.x - cardWidth / 2);
+      const y = Math.round(o.y - cardHeight / 2);
+      const delay = i * GATHER_CARD_DELAY_MS;
+      
       setTimeout(() => {
-        el.style.transition = `left ${dur}ms cubic-bezier(.22,.61,.36,1), top ${dur}ms cubic-bezier(.22,.61,.36,1), transform ${dur}ms ease`;
-        el.style.left = `${left}px`;
-        el.style.top = `${top}px`;
-        el.style.transform = 'rotate(0deg)';
+        el.style.transition = `transform ${GATHER_FLY_DURATION_MS}ms cubic-bezier(0.22, 0.61, 0.36, 1)`;
+        el.style.transform = `translate(${x}px, ${y}px)`;
         el.style.zIndex = String(3000 + i);
+        
         setTimeout(() => {
           doneCount++;
           if (doneCount === cards.length) {
             isDealing = false;
             setTimeout(() => onDone && onDone(), 40);
           }
-        }, dur + 20);
+        }, GATHER_FLY_DURATION_MS + 20);
       }, delay);
     });
   }
 
-  function getCardEl(id) { return cardLayer.querySelector(`.card[data-id="${id}"]`); }
-
-  // findCardId removed; not needed for completed houses
-
-  // Rules
+  // === GAME RULES ===
+  
+  /**
+   * Checks if upperCard can be placed on top of lowerCard in tableau
+   * Rules: descending rank, alternating colors
+   */
   function canStack(upperCard, lowerCard) {
-    // upperCard goes on top of lowerCard in tableau
-    if (!lowerCard) return true; // empty column allows any
+    if (!lowerCard) return true; // Empty column allows any card
     const ranksDescending = upperCard.rankIndex === lowerCard.rankIndex - 1;
     const colorsAlternate = upperCard.color !== lowerCard.color;
     return ranksDescending && colorsAlternate;
   }
 
-  // No manual foundation moves
-
-  // Drag logic
+  // === DRAG & DROP SYSTEM ===
+  
   let dragState = null;
+  /**
+   * Handles the start of a card drag operation
+   */
   function onPointerDown(e) {
-    if (isDealing) return; // disable interactions while dealing
+    if (isDealing) return;
+    
     const cardEl = e.target.closest('.card');
     if (!cardEl) return;
+    
     e.preventDefault();
     cardLayer.setPointerCapture?.(e.pointerId);
+    
     const id = cardEl.dataset.id;
-    // Determine the stack from this card upward within its column
     const { columnIndex, stackIndex } = findCardLocation(id);
-    if (columnIndex == null) return; // ignore foundation top for dragging
+    if (columnIndex == null) return;
 
-    // Build moving stack IDs
+    // Build stack of cards to move (from clicked card to top)
     const movingIds = tableau[columnIndex].slice(stackIndex);
     const movingCards = movingIds.map((cid) => cardsById.get(cid));
-    // Verify the moving stack is correctly ordered
+    
+    // Verify the stack is valid (correctly ordered)
     for (let i = 1; i < movingCards.length; i++) {
-      if (!canStack(movingCards[i], movingCards[i - 1])) return; // illegal pick
+      if (!canStack(movingCards[i], movingCards[i - 1])) return;
     }
 
+    // Extract current transform positions for smooth dragging
     const startPositions = movingIds.map((cid) => {
       const el = getCardEl(cid);
-      return { left: parseFloat(el.style.left), top: parseFloat(el.style.top) };
+      const transform = el.style.transform;
+      // Parse translate(Xpx, Ypx) from transform
+      const match = transform.match(/translate\(([^,]+)px,\s*([^)]+)px\)/);
+      if (match) {
+        return { x: parseFloat(match[1]), y: parseFloat(match[2]) };
+      }
+      return { x: 0, y: 0 };
     });
 
     dragState = {
@@ -400,35 +536,44 @@
       startPositions,
     };
 
-    // Raise z-index and add dragging style
+    // Apply dragging visual state
     movingIds.forEach((cid, i) => {
       const el = getCardEl(cid);
       el.classList.add('dragging');
       el.style.zIndex = String(2000 + i);
     });
 
+    // Use passive listener for smooth scrolling performance
     window.addEventListener('pointermove', onPointerMove, { passive: true });
     window.addEventListener('pointerup', onPointerUp, { once: true });
   }
 
+  /**
+   * Updates card positions during drag using GPU-accelerated transforms
+   */
   function onPointerMove(e) {
     if (!dragState) return;
+    
     const dx = e.clientX - dragState.startX;
     const dy = e.clientY - dragState.startY;
     const { overlap } = getCardSize();
+    
+    // Update positions of all cards in the dragged stack using transforms
     dragState.movingIds.forEach((cid, i) => {
       const el = getCardEl(cid);
-      el.style.left = `${dragState.startPositions[i].left + dx}px`;
-      el.style.top = `${dragState.startPositions[i].top + dy + i * overlap}px`;
+      const newX = dragState.startPositions[i].x + dx;
+      const newY = dragState.startPositions[i].y + dy + i * overlap;
+      el.style.transform = `translate(${newX}px, ${newY}px) scale(1.06) rotate(-1deg)`;
     });
   }
 
+  /**
+   * Handles card drop at the end of drag
+   */
   function onPointerUp(e) {
     if (!dragState) return;
-    const dx = e.clientX - dragState.startX;
-    const dy = e.clientY - dragState.startY;
 
-    // Determine best drop target using the pointer position for more forgiving drops
+    // Find the best drop target based on pointer position
     const drop = findBestDropTarget(e.clientX, e.clientY);
     if (drop) {
       let moved = false;
@@ -438,7 +583,7 @@
       if (moved) checkWin();
     }
 
-    // Reset visuals
+    // Clean up drag visuals
     dragState.movingIds.forEach((cid) => {
       const el = getCardEl(cid);
       el.classList.remove('dragging');
@@ -453,33 +598,53 @@
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
   }
 
+  /**
+   * Finds the best drop target (column) for a drag operation
+   * Uses cached column rectangles for performance
+   */
   function findBestDropTarget(clientX, clientY) {
     const x = clientX;
     const y = clientY;
+    
+    // Ensure cache is fresh
+    if (layoutCache.needsUpdate) {
+      updateLayoutCache();
+    }
+    
+    const { columnRects } = layoutCache;
 
-    // Otherwise check tableau columns
-    const columns = Array.from(tableauArea.querySelectorAll('.column'));
-    for (let i = 0; i < columns.length; i++) {
+    // Check if pointer is directly over a column
+    for (let i = 0; i < NUM_COLUMNS; i++) {
       if (completedColumns.has(i)) continue;
-      const rect = columns[i].getBoundingClientRect();
-      if (rectContains(rect, x, y)) return { type: 'column', colIndex: i };
+      const rect = columnRects[i];
+      if (rect && rectContains(rect, x, y)) {
+        return { type: 'column', colIndex: i };
+      }
     }
 
-    // If not directly over a column, snap to the nearest column horizontally within a margin
-    const snapMargin = 60;
+    // If not directly over, find nearest column within snap margin
     let bestIndex = -1;
     let bestDist = Infinity;
-    for (let i = 0; i < columns.length; i++) {
+    
+    for (let i = 0; i < NUM_COLUMNS; i++) {
       if (completedColumns.has(i)) continue;
-      const rect = columns[i].getBoundingClientRect();
+      const rect = columnRects[i];
+      if (!rect) continue;
+      
       const dx = x < rect.left ? rect.left - x : (x > rect.right ? x - rect.right : 0);
       const dy = y < rect.top ? rect.top - y : (y > rect.bottom ? y - rect.bottom : 0);
       const dist = Math.hypot(dx, dy);
-      if (dist < bestDist) { bestDist = dist; bestIndex = i; }
+      
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIndex = i;
+      }
     }
-    if (bestIndex !== -1 && bestDist <= snapMargin) {
+    
+    if (bestIndex !== -1 && bestDist <= SNAP_MARGIN_PX) {
       return { type: 'column', colIndex: bestIndex };
     }
+    
     return null;
   }
 
@@ -511,7 +676,11 @@
     return true;
   }
 
-  // Detect and move a completed house (column of exactly 13 cards K→A alternating colors)
+  // === AUTO-COMPLETE SYSTEM ===
+  
+  /**
+   * Detects and moves a completed house (13 cards K→A alternating colors)
+   */
   function maybeAutoCompleteColumn(colIndex) {
     if (completedColumns.has(colIndex)) return;
     const ids = tableau[colIndex];
@@ -550,6 +719,8 @@
     statusText.textContent = text;
   }
 
+  // === WIN DETECTION & CELEBRATION ===
+  
   function checkWin() {
     if (isGameWon) return;
     const allComplete = completedHouses.length === 4;
@@ -808,7 +979,9 @@
     setTimeout(() => { if (layer && layer.children.length === 0) layer.remove(); }, 6000);
   }
 
-  // Hint system: smart search for best long-term move using shallow lookahead + heuristic
+  // === HINT SYSTEM ===
+  // Smart search for best moves using beam search with heuristic evaluation
+  
   function isInverseOfLast(move) {
     if (!lastHintMove) return false;
     if (move.type !== 'toColumn' || lastHintMove.type !== 'toColumn') return false;
@@ -1048,32 +1221,41 @@
     return true;
   }
 
+  /**
+   * Visually highlights a suggested move
+   */
   function flashHint(move) {
     if (!move) {
       setStatus('No moves found.');
       return;
     }
-    // toColumn: highlight moving stack head and destination column
+    
+    // Highlight moving stack and destination column
     const stackEls = move.movingIds.map(id => getCardEl(id)).filter(Boolean);
     const toColEl = tableauArea.querySelector(`.column[data-col="${move.toCol}"]`);
+    
     stackEls.forEach(el => el.classList.add('hint-glow'));
     if (toColEl) toColEl.classList.add('hint-glow');
+    
     setTimeout(() => {
       stackEls.forEach(el => el && el.classList.remove('hint-glow'));
       toColEl && toColEl.classList.remove('hint-glow');
-    }, 1000);
+    }, HINT_GLOW_DURATION_MS);
+    
     setStatus('Hint: Move stack');
     lastHintMove = move;
-    // Track history (cap at 12 entries)
+    
+    // Track history (cap at 12 entries) to avoid loops
     if (move.type === 'toColumn') {
       hintHistory.push({ head: move.movingIds[0], from: move.fromCol, to: move.toCol });
       if (hintHistory.length > 12) hintHistory.shift();
-      // Add head cooldown to reduce re-suggesting same head: 3-hint cooldown
       hintHeadCooldown.set(move.movingIds[0], 3);
     }
   }
 
-  // Buttons
+  // === EVENT HANDLERS & INITIALIZATION ===
+  
+  // Redeal button
   redealBtn.addEventListener('click', () => {
     if (isDealing) return;
     gatherCardsToPiles(() => {
@@ -1093,15 +1275,17 @@
       hintConfirmArmed = true;
       hintBtn.textContent = 'Sure?';
       hintBtn.classList.add('btn-warn');
-      // auto-timeout disarm after 3s
+      
+      // Auto-timeout disarm
       clearTimeout(hintBtn._disarmTimer);
       hintBtn._disarmTimer = setTimeout(() => {
         hintConfirmArmed = false;
         hintBtn.textContent = 'Hint';
         hintBtn.classList.remove('btn-warn');
-      }, 3000);
+      }, HINT_CONFIRM_TIMEOUT_MS);
       return;
     }
+    
     hintConfirmArmed = false;
     hintBtn.textContent = 'Hint';
     hintBtn.classList.remove('btn-warn');
@@ -1158,9 +1342,18 @@
   ensureColumnsExist();
   showLandingOverlay();
 
-  // Handle window resize relayout
+  // === PERFORMANCE: Debounced resize handler ===
+  let resizeTimeout;
   window.addEventListener('resize', () => {
-    layoutAll();
+    // Invalidate cache immediately for responsive queries
+    layoutCache.needsUpdate = true;
+    
+    // Debounce the expensive relayout
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(() => {
+      updateLayoutCache();
+      layoutAll();
+    }, RESIZE_DEBOUNCE_MS);
   });
 })();
 
