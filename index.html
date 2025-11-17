@@ -14,6 +14,10 @@
       <div class="title">Patience</div>
       <div class="controls">
         <button id="redealBtn" class="btn">Redeal</button>
+        <button id="foundationsBtn" class="btn foundations-btn" title="View foundations" style="display: none;">
+          <span class="foundations-icon">🏆</span>
+          <span class="foundations-badge">0</span>
+        </button>
         <button id="undoBtn" class="btn" disabled>Undo</button>
         <button id="rulesTopBtn" class="btn" title="View rules">Rules</button>
         <button id="hintBtn" class="btn">Hint</button>
@@ -41,8 +45,22 @@
       <span id="statusText"></span>
     </footer>
 
+    <!-- Foundations Modal -->
+    <div id="foundationsModal" class="foundations-modal" style="display: none;">
+      <div class="foundations-modal-backdrop"></div>
+      <div class="foundations-modal-content">
+        <div class="foundations-modal-header">
+          <h2>Foundations</h2>
+          <button class="foundations-modal-close" aria-label="Close">×</button>
+        </div>
+        <div class="foundations-grid" id="foundationsGrid">
+          <!-- Foundation cards will be inserted here -->
+        </div>
+      </div>
+    </div>
+
     <script src="game.js"></script>
   </body>
-  </html>
+</html>
 
 

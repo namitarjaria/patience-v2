@@ -40,6 +40,9 @@
   const hintBtn = document.getElementById("hintBtn");
   const rulesTopBtn = document.getElementById("rulesTopBtn");
   const testWinBtn = document.getElementById("testWinBtn");
+  const foundationsBtn = document.getElementById("foundationsBtn");
+  const foundationsModal = document.getElementById("foundationsModal");
+  const foundationsGrid = document.getElementById("foundationsGrid");
   const statusText = document.getElementById("statusText");
 
   // === GAME STATE ===
@@ -68,22 +71,82 @@
   // === LAYOUT HELPERS ===
   
   /**
+   * Computes responsive card dimensions based on available viewport space
+   * Ensures 10 columns fit with appropriate gaps
+   */
+  function computeResponsiveCardSize() {
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    
+    // Measure chrome heights (topbar + bottombar)
+    const topbar = document.querySelector('.topbar');
+    const bottombar = document.querySelector('.bottombar');
+    const chromeHeight = (topbar?.offsetHeight || 0) + (bottombar?.offsetHeight || 0);
+    
+    // Available space for game board
+    const availableWidth = viewportWidth;
+    const availableHeight = viewportHeight - chromeHeight;
+    
+    // Calculate space needed for 10 columns with gaps
+    // Formula: 10 * cardWidth + 9 * gap + 2 * padding
+    const NUM_COLS = 10;
+    const NUM_GAPS = NUM_COLS - 1;
+    const HORIZONTAL_PADDING = 16; // Base padding on each side
+    
+    // Target aspect ratio for cards (width:height ≈ 0.735)
+    const CARD_ASPECT_RATIO = 0.735;
+    
+    // Calculate max card width that fits horizontally
+    const maxWidthFromColumns = Math.floor((availableWidth - HORIZONTAL_PADDING * 2 - NUM_GAPS * 6) / NUM_COLS);
+    
+    // Calculate max card height from available vertical space
+    // Reserve space for foundation area (approx 120px + padding)
+    const foundationReserve = 140;
+    const maxHeightFromViewport = Math.floor((availableHeight - foundationReserve) * 0.6);
+    
+    // Calculate card width from height constraint
+    const maxWidthFromHeight = Math.floor(maxHeightFromViewport * CARD_ASPECT_RATIO);
+    
+    // Use the smaller constraint, but clamp to reasonable min/max
+    let cardWidth = Math.min(maxWidthFromColumns, maxWidthFromHeight);
+    cardWidth = Math.max(36, Math.min(88, cardWidth)); // Clamp between 36px and 88px
+    
+    // Calculate corresponding height
+    let cardHeight = Math.round(cardWidth / CARD_ASPECT_RATIO);
+    
+    // Calculate gap based on card size (proportional)
+    const gap = Math.max(4, Math.floor(cardWidth * 0.14));
+    
+    return { cardWidth, cardHeight, gap, chromeHeight };
+  }
+  
+  /**
+   * Updates CSS custom properties with computed responsive values
+   */
+  function updateResponsiveCSSVars() {
+    const { cardWidth, cardHeight, gap, chromeHeight } = computeResponsiveCardSize();
+    const root = document.documentElement;
+    
+    root.style.setProperty('--card-width', `${cardWidth}px`);
+    root.style.setProperty('--card-height', `${cardHeight}px`);
+    root.style.setProperty('--card-gap', `${gap}px`);
+    root.style.setProperty('--chrome-height', `${chromeHeight}px`);
+    root.style.setProperty('--board-width', `${window.innerWidth}px`);
+    root.style.setProperty('--board-height', `${window.innerHeight - chromeHeight}px`);
+    
+    // Update layout cache with new dimensions
+    layoutCache.cardWidth = cardWidth;
+    layoutCache.cardHeight = cardHeight;
+    layoutCache.overlap = Math.floor(cardHeight * CARD_OVERLAP_RATIO);
+  }
+  
+  /**
    * Updates the layout cache with current measurements
    * Call this after DOM changes or window resize
    */
   function updateLayoutCache() {
-    // Measure card size from existing card or use CSS-based fallback
-    const sample = cardLayer.querySelector('.card');
-    if (sample) {
-      const rect = sample.getBoundingClientRect();
-      layoutCache.cardWidth = Math.round(rect.width);
-      layoutCache.cardHeight = Math.round(rect.height);
-    } else {
-      // Fallback values matching CSS
-      layoutCache.cardWidth = 72;
-      layoutCache.cardHeight = 98;
-    }
-    layoutCache.overlap = Math.floor(layoutCache.cardHeight * CARD_OVERLAP_RATIO);
+    // Update responsive CSS vars first
+    updateResponsiveCSSVars();
     
     // Cache column and root rectangles
     layoutCache.rootRect = gameRoot.getBoundingClientRect();
@@ -170,6 +233,7 @@
     lastHintMove = null;
     hintHistory = [];
     hintHeadCooldown = new Map();
+    updateFoundationsButton();
   }
 
   function dealNewGame() {
@@ -178,6 +242,7 @@
     completedHouses = [];
     completedColumns = new Set();
     isGameWon = false;
+    updateFoundationsButton();
     gameRoot.classList.remove('game-won');
     document.body.classList.remove('game-won');
     const confettiLayer = document.getElementById('confettiLayer');
@@ -491,6 +556,9 @@
   // === DRAG & DROP SYSTEM ===
   
   let dragState = null;
+  let dragStartScrollX = 0;
+  let dragStartScrollY = 0;
+  
   /**
    * Handles the start of a card drag operation
    */
@@ -499,9 +567,6 @@
     
     const cardEl = e.target.closest('.card');
     if (!cardEl) return;
-    
-    e.preventDefault();
-    cardLayer.setPointerCapture?.(e.pointerId);
     
     const id = cardEl.dataset.id;
     const { columnIndex, stackIndex } = findCardLocation(id);
@@ -515,15 +580,39 @@
     for (let i = 1; i < movingCards.length; i++) {
       if (!canStack(movingCards[i], movingCards[i - 1])) return;
     }
+    
+    // Only prevent default after we've confirmed it's a valid drag
+    e.preventDefault();
+    
+    // Capture pointer for this drag operation
+    try {
+      if (cardEl.setPointerCapture) {
+        cardEl.setPointerCapture(e.pointerId);
+      } else if (cardLayer.setPointerCapture) {
+        cardLayer.setPointerCapture(e.pointerId);
+      }
+    } catch (err) {
+      // Pointer capture may fail on some browsers, continue anyway
+      console.debug('Pointer capture failed:', err);
+    }
+    
+    // Store initial scroll positions to account for scrolling during drag
+    dragStartScrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+    dragStartScrollY = window.scrollY || document.documentElement.scrollTop || 0;
 
     // Extract current transform positions for smooth dragging
+    // Account for any scroll offset
+    const rootRect = gameRoot.getBoundingClientRect();
     const startPositions = movingIds.map((cid) => {
       const el = getCardEl(cid);
       const transform = el.style.transform;
       // Parse translate(Xpx, Ypx) from transform
       const match = transform.match(/translate\(([^,]+)px,\s*([^)]+)px\)/);
       if (match) {
-        return { x: parseFloat(match[1]), y: parseFloat(match[2]) };
+        return { 
+          x: parseFloat(match[1]), 
+          y: parseFloat(match[2]) 
+        };
       }
       return { x: 0, y: 0 };
     });
@@ -534,6 +623,7 @@
       movingIds,
       fromColumn: columnIndex,
       startPositions,
+      pointerId: e.pointerId,
     };
 
     // Apply dragging visual state
@@ -543,9 +633,10 @@
       el.style.zIndex = String(2000 + i);
     });
 
-    // Use passive listener for smooth scrolling performance
-    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    // Use non-passive listener to prevent scrolling during drag
+    window.addEventListener('pointermove', onPointerMove, { passive: false });
     window.addEventListener('pointerup', onPointerUp, { once: true });
+    window.addEventListener('pointercancel', onPointerUp, { once: true });
   }
 
   /**
@@ -554,8 +645,17 @@
   function onPointerMove(e) {
     if (!dragState) return;
     
-    const dx = e.clientX - dragState.startX;
-    const dy = e.clientY - dragState.startY;
+    // Prevent scrolling during drag
+    e.preventDefault();
+    
+    // Account for any scroll changes since drag started
+    const currentScrollX = window.scrollX || document.documentElement.scrollLeft || 0;
+    const currentScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const scrollDeltaX = currentScrollX - dragStartScrollX;
+    const scrollDeltaY = currentScrollY - dragStartScrollY;
+    
+    const dx = e.clientX - dragState.startX + scrollDeltaX;
+    const dy = e.clientY - dragState.startY + scrollDeltaY;
     const { overlap } = getCardSize();
     
     // Update positions of all cards in the dragged stack using transforms
@@ -572,6 +672,21 @@
    */
   function onPointerUp(e) {
     if (!dragState) return;
+    
+    // Release pointer capture
+    if (dragState.pointerId != null) {
+      try {
+        const cardEl = getCardEl(dragState.movingIds[0]);
+        if (cardEl && cardEl.releasePointerCapture) {
+          cardEl.releasePointerCapture(dragState.pointerId);
+        } else if (cardLayer.releasePointerCapture) {
+          cardLayer.releasePointerCapture(dragState.pointerId);
+        }
+      } catch (err) {
+        // Ignore release errors
+        console.debug('Pointer release failed:', err);
+      }
+    }
 
     // Find the best drop target based on pointer position
     const drop = findBestDropTarget(e.clientX, e.clientY);
@@ -592,6 +707,7 @@
     layoutAll();
 
     window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointercancel', onPointerUp);
   }
 
   function rectContains(rect, x, y) {
@@ -703,6 +819,101 @@
     const colEl = tableauArea.querySelector(`.column[data-col="${colIndex}"]`);
     if (colEl) colEl.classList.add('completed');
     layoutAll();
+    // Update foundations button on mobile
+    updateFoundationsButton();
+  }
+  
+  /**
+   * Updates the foundations button visibility and badge count
+   */
+  function updateFoundationsButton() {
+    if (!foundationsBtn) return;
+    const count = completedHouses.length;
+    const badge = foundationsBtn.querySelector('.foundations-badge');
+    if (badge) badge.textContent = String(count);
+    
+    // Show button only on mobile and only if there are foundations
+    const isMobile = window.innerWidth <= 740;
+    if (count > 0 && isMobile) {
+      foundationsBtn.style.display = 'inline-flex';
+    } else {
+      foundationsBtn.style.display = 'none';
+    }
+  }
+  
+  // Update button visibility on resize
+  window.addEventListener('resize', () => {
+    updateFoundationsButton();
+  });
+  
+  /**
+   * Shows the foundations modal with all completed foundations
+   */
+  function showFoundationsModal() {
+    if (!foundationsModal || !foundationsGrid) return;
+    
+    // Clear previous content
+    foundationsGrid.innerHTML = '';
+    
+    if (completedHouses.length === 0) {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.className = 'foundations-empty';
+      emptyMsg.textContent = 'No foundations completed yet';
+      foundationsGrid.appendChild(emptyMsg);
+    } else {
+      // Create a grid item for each foundation
+      completedHouses.forEach((houseIds, index) => {
+        const foundationItem = document.createElement('div');
+        foundationItem.className = 'foundation-item';
+        
+        const topCard = cardsById.get(houseIds[houseIds.length - 1]); // Top card (Ace)
+        const suit = topCard ? suitName(topCard.suit) : 'unknown';
+        
+        const header = document.createElement('div');
+        header.className = 'foundation-item-header';
+        header.textContent = suit.charAt(0).toUpperCase() + suit.slice(1);
+        foundationItem.appendChild(header);
+        
+        const cardsContainer = document.createElement('div');
+        cardsContainer.className = 'foundation-cards-preview';
+        
+        // Show cards in a compact stack view (show top few cards)
+        const cardsToShow = Math.min(5, houseIds.length);
+        for (let i = houseIds.length - cardsToShow; i < houseIds.length; i++) {
+          const cardId = houseIds[i];
+          const card = cardsById.get(cardId);
+          if (!card) continue;
+          
+          const cardPreview = document.createElement('div');
+          cardPreview.className = 'foundation-card-preview';
+          cardPreview.style.backgroundImage = `url('${cardAssetUrl(card)}')`;
+          cardPreview.setAttribute('aria-label', `${rankName(card.rankIndex)} of ${suitName(card.suit)}`);
+          cardsContainer.appendChild(cardPreview);
+        }
+        
+        if (houseIds.length > cardsToShow) {
+          const moreIndicator = document.createElement('div');
+          moreIndicator.className = 'foundation-more-indicator';
+          moreIndicator.textContent = `+${houseIds.length - cardsToShow}`;
+          cardsContainer.appendChild(moreIndicator);
+        }
+        
+        foundationItem.appendChild(cardsContainer);
+        foundationsGrid.appendChild(foundationItem);
+      });
+    }
+    
+    foundationsModal.style.display = 'flex';
+    document.body.style.overflow = 'hidden';
+  }
+  
+  /**
+   * Hides the foundations modal
+   */
+  function hideFoundationsModal() {
+    if (!foundationsModal) return;
+    foundationsModal.style.display = 'none';
+    document.body.style.overflow = '';
   }
 
   function findCardLocation(id) {
@@ -1222,7 +1433,7 @@
   }
 
   /**
-   * Visually highlights a suggested move
+   * Visually highlights a suggested move with fluid animations
    */
   function flashHint(move) {
     if (!move) {
@@ -1230,17 +1441,35 @@
       return;
     }
     
-    // Highlight moving stack and destination column
+    // Highlight only the cards that should be moved (not the destination)
     const stackEls = move.movingIds.map(id => getCardEl(id)).filter(Boolean);
-    const toColEl = tableauArea.querySelector(`.column[data-col="${move.toCol}"]`);
     
-    stackEls.forEach(el => el.classList.add('hint-glow'));
-    if (toColEl) toColEl.classList.add('hint-glow');
+    // Apply hint glow with staggered timing for fluid cascade effect
+    stackEls.forEach((el, index) => {
+      if (!el) return;
+      
+      // Small delay for each card in stack for cascade effect
+      setTimeout(() => {
+        el.classList.add('hint-glow');
+      }, index * 30);
+    });
     
+    // Remove hints after animation completes (3 cycles = 6000ms)
+    const totalDuration = HINT_GLOW_DURATION_MS * 3;
     setTimeout(() => {
-      stackEls.forEach(el => el && el.classList.remove('hint-glow'));
-      toColEl && toColEl.classList.remove('hint-glow');
-    }, HINT_GLOW_DURATION_MS);
+      stackEls.forEach(el => {
+        if (el) {
+          el.classList.remove('hint-glow');
+          // Smoothly remove filter effect
+          el.style.transition = 'filter 500ms ease-out';
+          setTimeout(() => {
+            if (el.style) {
+              el.style.transition = '';
+            }
+          }, 500);
+        }
+      });
+    }, totalDuration);
     
     setStatus('Hint: Move stack');
     lastHintMove = move;
@@ -1299,6 +1528,34 @@
     });
   }
 
+  // Foundations button and modal
+  if (foundationsBtn) {
+    foundationsBtn.addEventListener('click', () => {
+      showFoundationsModal();
+    });
+  }
+  
+  const modalCloseBtn = foundationsModal?.querySelector('.foundations-modal-close');
+  if (modalCloseBtn) {
+    modalCloseBtn.addEventListener('click', () => {
+      hideFoundationsModal();
+    });
+  }
+  
+  const modalBackdrop = foundationsModal?.querySelector('.foundations-modal-backdrop');
+  if (modalBackdrop) {
+    modalBackdrop.addEventListener('click', () => {
+      hideFoundationsModal();
+    });
+  }
+  
+  // Close modal on Escape key
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && foundationsModal && foundationsModal.style.display === 'flex') {
+      hideFoundationsModal();
+    }
+  });
+
   // Testing: preview win state and animations
   if (testWinBtn) {
     testWinBtn.addEventListener('click', () => {
@@ -1331,6 +1588,7 @@
         }
       }
       isGameWon = true;
+      updateFoundationsButton();
       celebrateWin();
     });
   }
@@ -1340,11 +1598,11 @@
 
   // Initial DOM preparation
   ensureColumnsExist();
-  showLandingOverlay();
 
   // === PERFORMANCE: Debounced resize handler ===
   let resizeTimeout;
-  window.addEventListener('resize', () => {
+  
+  function handleResize() {
     // Invalidate cache immediately for responsive queries
     layoutCache.needsUpdate = true;
     
@@ -1354,7 +1612,27 @@
       updateLayoutCache();
       layoutAll();
     }, RESIZE_DEBOUNCE_MS);
-  });
+  }
+  
+  window.addEventListener('resize', handleResize);
+  
+  // Watch for chrome (topbar/bottombar) size changes using ResizeObserver
+  const topbar = document.querySelector('.topbar');
+  const bottombar = document.querySelector('.bottombar');
+  
+  if (topbar && bottombar && window.ResizeObserver) {
+    const chromeObserver = new ResizeObserver(() => {
+      handleResize();
+    });
+    chromeObserver.observe(topbar);
+    chromeObserver.observe(bottombar);
+  }
+  
+  // Initial responsive setup - must happen before any layout operations
+  updateResponsiveCSSVars();
+  
+  // Show landing overlay after responsive setup
+  showLandingOverlay();
 })();
 
 
