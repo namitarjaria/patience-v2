@@ -44,8 +44,6 @@
   const foundationsModal = document.getElementById("foundationsModal");
   const foundationsGrid = document.getElementById("foundationsGrid");
   const statusText = document.getElementById("statusText");
-  const redealCountdownOverlay = document.getElementById("redealCountdownOverlay");
-  const redealCountdownNumber = document.getElementById("redealCountdownNumber");
 
   // === GAME STATE ===
   let cardsById = new Map();
@@ -59,8 +57,7 @@
   let isGameWon = false;
   let isDealing = false;
   let undoStack = [];
-  let redealCountdownShownThisGame = false;
-
+  
   // Layout cache (updated on resize)
   let layoutCache = {
     cardWidth: 72,
@@ -245,7 +242,6 @@
     completedHouses = [];
     completedColumns = new Set();
     isGameWon = false;
-    redealCountdownShownThisGame = false;
     updateFoundationsButton();
     gameRoot.classList.remove('game-won');
     document.body.classList.remove('game-won');
@@ -255,7 +251,6 @@
     if (winClone) winClone.remove();
     const winOverlay = document.getElementById('winOverlay');
     if (winOverlay) winOverlay.remove();
-    if (redealCountdownOverlay) redealCountdownOverlay.style.display = 'none';
     const headerTitle = document.querySelector('.topbar .title');
     if (headerTitle) headerTitle.style.opacity = '1';
     const bottomBar = document.querySelector('.bottombar');
@@ -285,7 +280,6 @@
     lastHintMove = null;
     hintHistory = [];
     hintHeadCooldown = new Map();
-    redealCountdownShownThisGame = false;
   }
 
   /**
@@ -827,34 +821,8 @@
     layoutAll();
     // Update foundations button on mobile
     updateFoundationsButton();
-    // Show redeal countdown when 2 houses completed
-    if (completedHouses.length === 2 && !redealCountdownShownThisGame) {
-      showRedealCountdownDialog();
-    }
   }
-
-  /**
-   * Shows blocking "Redealing in... 10" countdown overlay when 2 houses are completed.
-   * Counts 10→1, then waits 5 more seconds. Does not actually redeal.
-   */
-  function showRedealCountdownDialog() {
-    if (!redealCountdownOverlay || !redealCountdownNumber) return;
-    redealCountdownShownThisGame = true;
-    redealCountdownOverlay.style.display = 'flex';
-
-    let count = 10;
-    const countInterval = setInterval(() => {
-      count--;
-      redealCountdownNumber.textContent = String(count);
-      if (count <= 0) {
-        clearInterval(countInterval);
-        setTimeout(() => {
-          redealCountdownOverlay.style.display = 'none';
-        }, 5000);
-      }
-    }, 1000);
-  }
-
+  
   /**
    * Updates the foundations button visibility and badge count
    */
